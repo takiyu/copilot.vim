@@ -726,7 +726,7 @@ function! s:commands.version(opts) abort
     if exists('s:agent.serverInfo.version')
       echo s:agent.serverInfo.name . ' ' . s:agent.serverInfo.version
     else
-      echo 'dist/agent.js ' . versions.Await().version
+      echo 'GitHub Copilot Language Server ' . versions.Await().version
     endif
     if exists('s:agent.node_version')
       echo 'Node.js ' . s:agent.node_version

@@ -2,7 +2,7 @@ scriptencoding utf-8
 
 let s:plugin_version = copilot#version#String()
 
-let s:error_exit = -1
+let s:error_exit = -32097
 
 let s:root = expand('<sfile>:h:h:h')
 
@@ -22,13 +22,13 @@ function! s:VimClose() dict abort
   let job = self.job
   if has_key(self, 'kill')
     call job_stop(job, 'kill')
-    call copilot#logger#Warn('Agent forcefully terminated')
+    call copilot#logger#Warn('Process forcefully terminated')
     return
   endif
   let self.kill = v:true
   let self.shutdown = self.Request('shutdown', {}, function(self.Notify, ['exit']))
   call timer_start(2000, { _ -> job_stop(job, 'kill') })
-  call copilot#logger#Debug('Agent shutdown initiated')
+  call copilot#logger#Debug('Process shutdown initiated')
 endfunction
 
 function! s:LogSend(request, line) abort
@@ -62,7 +62,7 @@ function! s:Send(agent, request) abort
   catch /^Vim\%((\a\+)\)\=:E906:/
     let a:agent.kill = v:true
     let job = a:agent.job
-    call copilot#logger#Warn('Terminating agent after failed write')
+    call copilot#logger#Warn('Terminating process after failed write')
     call job_stop(job)
     call timer_start(2000, { _ -> job_stop(job, 'kill') })
     return v:false
@@ -175,7 +175,7 @@ endfunction
 
 function! s:SendRequest(agent, request, ...) abort
   if empty(s:Send(a:agent, a:request)) && has_key(a:request, 'id') && has_key(a:agent.requests, a:request.id)
-    call s:RejectRequest(remove(a:agent.requests, a:request.id), {'code': 257, 'message': 'Write failed'})
+    call s:RejectRequest(remove(a:agent.requests, a:request.id), {'code': -32099, 'message': 'Write failed'})
   endif
 endfunction
 
@@ -362,12 +362,19 @@ function! s:OnExit(agent, code, ...) abort
   if has_key(a:agent, 'client_id')
     call remove(a:agent, 'client_id')
   endif
-  let code = a:code < 0 || a:code > 255 ? 256 : a:code
+  let error = {'code': s:error_exit, 'message': 'Process exited with status ' . a:code, 'data': {'status': a:code}}
+  if a:code == 2
+    let error.message = 'Process aborted due to unsupported Node.js version'
+  endif
   for id in sort(keys(a:agent.requests), { a, b -> +a > +b })
-    call s:RejectRequest(remove(a:agent.requests, id), {'code': code, 'message': 'Agent exited', 'data': {'status': a:code}})
+    call s:RejectRequest(remove(a:agent.requests, id), deepcopy(error))
   endfor
   call copilot#util#Defer({ -> get(s:instances, a:agent.id) is# a:agent ? remove(s:instances, a:agent.id) : {} })
-  call copilot#logger#Info('Agent exited with status ' . a:code)
+  if a:code == 0
+    call copilot#logger#Info(error.message)
+  else
+    call copilot#logger#Warn(error.message)
+  endif
 endfunction
 
 function! copilot#agent#LspInit(agent_id, initialize_result) abort
@@ -482,24 +489,20 @@ function! s:Command() abort
   endif
   let node_version = s:GetNodeVersion(node)
   let warning = ''
-  if node_version.major < 18 && get(node, 0, '') !=# 'node' && executable('node')
-    let node_version_from_path = s:GetNodeVersion(['node'])
-    if node_version_from_path.major >= 18
-      let warning = 'Ignoring g:copilot_node_command: Node.js ' . node_version.string . ' is end-of-life'
-      let node = ['node']
-      let node_version = node_version_from_path
-    endif
-  endif
   if node_version.status != 0
     return [v:null, '', 'Node.js exited with status ' . node_version.status]
   endif
-  if !get(g:, 'copilot_ignore_node_version')
-    if node_version.major == 0
-      return [v:null, node_version.string, 'Could not determine Node.js version']
-    elseif node_version.major < 16 || node_version.major == 16 && node_version.minor < 14 || node_version.major == 17 && node_version.minor < 3
-      " 16.14+ and 17.3+ still work for now, but are end-of-life
-      return [v:null, node_version.string, 'Node.js version 18.x or newer required but found ' . node_version.string]
-    endif
+  if get(node, 0, '') !=# 'node'
+    let upgrade_advice = 'Change g:copilot_node_command to'
+  else
+    let upgrade_advice = 'Upgrade to'
+  endif
+  if node_version.major == 0
+    return [v:null, node_version.string, 'Could not determine Node.js version']
+  elseif node_version.major < 16 || node_version.major == 16 && node_version.minor < 14 || node_version.major == 17 && node_version.minor < 3
+    return [v:null, node_version.string, 'Node.js ' . node_version.string . ' is unsupported.  ' . upgrade_advice . ' 18.x or newer']
+  elseif node_version.major < 18
+    let warning = 'Node.js ' . node_version.string . ' support will soon be dropped.  ' . upgrade_advice . ' 18.x or newer'
   endif
   return [node + agent + ['--stdio'], node_version.string, warning]
 endfunction
@@ -556,9 +559,9 @@ endfunction
 
 function! s:InitializeError(error, agent) abort
   if a:error.code == s:error_exit
-    let a:agent.startup_error = 'Agent exited with status ' . a:error.data.status
+    let a:agent.startup_error = a:error.message
   else
-    let a:agent.startup_error = 'Unexpected error ' . a:error.code . ' calling agent: ' . a:error.message
+    let a:agent.startup_error = 'Unexpected error E' . a:error.code . ' initializing language server: ' . a:error.message
     call a:agent.Close()
   endif
 endfunction
@@ -630,7 +633,9 @@ function! copilot#agent#New(...) abort
       return instance
     else
       let instance.node_version_warning = command_error
-      call copilot#logger#Warn(command_error)
+      echohl WarningMsg
+      echomsg 'Copilot: ' . command_error
+      echohl NONE
     endif
   endif
   if !empty(node_version)
