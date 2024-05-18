@@ -779,7 +779,7 @@ function! s:commands.restart(opts) abort
   if !empty(err)
     return 'echoerr ' . string('Copilot: ' . err)
   endif
-  echo 'Copilot: Restarting agent.'
+  echo 'Copilot: Restarting language server.'
 endfunction
 
 function! s:commands.disable(opts) abort
