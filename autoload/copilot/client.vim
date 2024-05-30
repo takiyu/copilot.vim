@@ -455,7 +455,7 @@ function! s:GetNodeVersion(command) abort
   return {'status': status, 'string': string, 'major': major, 'minor': minor}
 endfunction
 
-let s:script_name = 'dist/agent.js'
+let s:script_name = 'dist/language-server.js'
 function! s:Command() abort
   if !has('nvim-0.6') && v:version < 900
     return [v:null, '', 'Vim version too old']
