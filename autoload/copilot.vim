@@ -172,8 +172,8 @@ function! copilot#Enabled() abort
         \ && empty(s:BufferDisabled())
 endfunction
 
-let s:inline_automatic = 1
-let s:inline_invoked = 2
+let s:inline_invoked = 1
+let s:inline_automatic = 2
 
 function! copilot#Complete(...) abort
   if exists('g:_copilot_timer')
@@ -401,13 +401,13 @@ function! s:Trigger(bufnr, timer) abort
   return copilot#Suggest()
 endfunction
 
-function! copilot#Schedule(...) abort
+function! copilot#Schedule() abort
   if !s:has_ghost_text || !s:Running() || !copilot#Enabled()
     call copilot#Clear()
     return
   endif
   call s:UpdatePreview()
-  let delay = a:0 ? a:1 : get(g:, 'copilot_idle_delay', 15)
+  let delay = get(g:, 'copilot_idle_delay', 45)
   call timer_stop(get(g:, '_copilot_timer', -1))
   let g:_copilot_timer = timer_start(delay, function('s:Trigger', [bufnr('')]))
 endfunction
