@@ -99,7 +99,7 @@ function! copilot#logger#Exception(...) abort
             \ 'type': type . code,
             \ 'value': message,
             \ 'stacktrace': stacklines}]
-            \ })
+            \ }, v:null, function('copilot#util#Nop'))
     endif
   endif
 endfunction
