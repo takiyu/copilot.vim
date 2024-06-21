@@ -780,11 +780,8 @@ endfunction
 
 function! s:commands.restart(opts) abort
   call s:Stop()
-  let err = copilot#Client().StartupError()
-  if !empty(err)
-    return 'echoerr ' . string('Copilot: ' . err)
-  endif
-  echo 'Copilot: Restarting language server.'
+  echo 'Copilot: Restarting language server'
+  call s:Start()
 endfunction
 
 function! s:commands.disable(opts) abort
@@ -803,6 +800,10 @@ function! s:commands.panel(opts) abort
   endif
 endfunction
 
+function! s:commands.log(opts) abort
+  return a:opts.mods . ' split +$ copilot:///log'
+endfunction
+
 function! copilot#CommandComplete(arg, lead, pos) abort
   let args = matchstr(strpart(a:lead, 0, a:pos), 'C\%[opilot][! ] *\zs.*')
   if args !~# ' '
@@ -816,33 +817,28 @@ endfunction
 function! copilot#Command(line1, line2, range, bang, mods, arg) abort
   let cmd = matchstr(a:arg, '^\%(\\.\|\S\)\+')
   let arg = matchstr(a:arg, '\s\zs\S.*')
-  if cmd ==# 'log'
-    return a:mods . ' split +$ copilot:///log'
-  endif
   if !empty(cmd) && !has_key(s:commands, tr(cmd, '-', '_'))
     return 'echoerr ' . string('Copilot: unknown command ' . string(cmd))
   endif
   try
-    let err = copilot#Client().StartupError()
-    if !empty(err)
-      return 'echo ' . string('Copilot: ' . err)
-    endif
-    try
-      let opts = copilot#Call('checkStatus', {'options': {'localChecksOnly': v:true}})
-    catch
-      call copilot#logger#Exception()
-      let opts = {'status': 'VimException'}
-    endtry
     if empty(cmd)
-      if opts.status ==# 'VimException'
-        return a:mods . ' split +$ copilot:///log'
-      elseif opts.status !=# 'OK' && opts.status !=# 'MaybeOK'
-        let cmd = 'setup'
+      if !s:Running()
+        let cmd = 'restart'
       else
-        let cmd = 'panel'
+        try
+          let opts = copilot#Call('checkStatus', {'options': {'localChecksOnly': v:true}})
+          if opts.status !=# 'OK' && opts.status !=# 'MaybeOK'
+            let cmd = 'setup'
+          else
+            let cmd = 'panel'
+          endif
+        catch
+          call copilot#logger#Exception()
+          let cmd = 'log'
+        endtry
       endif
     endif
-    call extend(opts, {'line1': a:line1, 'line2': a:line2, 'range': a:range, 'bang': a:bang, 'mods': a:mods, 'arg': arg})
+    let opts = {'line1': a:line1, 'line2': a:line2, 'range': a:range, 'bang': a:bang, 'mods': a:mods, 'arg': arg}
     let retval = s:commands[tr(cmd, '-', '_')](opts)
     if type(retval) == v:t_string
       return retval

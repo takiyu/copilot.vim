@@ -78,16 +78,23 @@ function! s:RejectRequest(request, error) abort
   endif
 endfunction
 
+function! s:AfterInitialized(fn, ...) dict abort
+  call add(self.after_initialized, function(a:fn, a:000))
+endfunction
+
 function! s:Send(instance, request) abort
+  if !has_key(a:instance, 'job')
+    return v:false
+  endif
   try
     call ch_sendexpr(a:instance.job, a:request)
     return v:true
   catch /^Vim\%((\a\+)\)\=:E906:/
     let a:instance.kill = v:true
-    let job = a:instance.job
-    call copilot#logger#Warn('Terminating process after failed write')
+    let job = remove(a:instance, 'job')
     call job_stop(job)
     call timer_start(2000, { _ -> job_stop(job, 'kill') })
+    call copilot#logger#Warn('Terminating process after failed write')
     return v:false
   catch /^Vim\%((\a\+)\)\=:E631:/
     return v:false
@@ -96,11 +103,7 @@ endfunction
 
 function! s:VimNotify(method, params) dict abort
   let request = {'method': a:method, 'params': a:params}
-  if has_key(self, 'initialization_pending')
-    call add(self.initialization_pending, request)
-  else
-    return s:Send(self, request)
-  endif
+  call self.AfterInitialized(function('s:Send', [self, request]))
 endfunction
 
 function! s:RequestWait() dict abort
@@ -197,7 +200,7 @@ endfunction
 
 let s:valid_request_key = '^\%(id\|method\|params\)$'
 function! s:SendRequest(instance, request, ...) abort
-  if !has_key(a:instance, 'job') || has_key(a:instance, 'kill')
+  if !has_key(a:instance, 'job') || get(a:instance, 'shutdown', a:request) isnot# a:request
     return s:RejectRequest(a:request, s:error_connection_inactive)
   endif
   let json = filter(copy(a:request), 'v:key =~# s:valid_request_key')
@@ -275,11 +278,7 @@ function! s:VimRequest(method, params, ...) dict abort
   let params = deepcopy(a:params)
   let [_, progress] = s:PreprocessParams(self, params)
   let request = call('s:SetUpRequest', [self, s:id, a:method, params, progress] + a:000)
-  if has_key(self, 'initialization_pending')
-    call add(self.initialization_pending, request)
-  else
-    call copilot#util#Defer(function('s:SendRequest'), self, request)
-  endif
+  call self.AfterInitialized(function('s:SendRequest', [self, request]))
   let self.requests[s:id] = request
   return request
 endfunction
@@ -397,6 +396,12 @@ function! s:OnExit(instance, code, ...) abort
   for id in sort(keys(a:instance.requests), { a, b -> +a > +b })
     call s:RejectRequest(remove(a:instance.requests, id), s:error_exit)
   endfor
+  if has_key(a:instance, 'after_initialized')
+    let a:instance.AfterInitialized = function('copilot#util#Defer')
+    for Fn in remove(a:instance, 'after_initialized')
+      call copilot#util#Defer(Fn)
+    endfor
+  endif
   call copilot#util#Defer({ -> get(s:instances, a:instance.id) is# a:instance ? remove(s:instances, a:instance.id) : {} })
   if a:code == 0
     call copilot#logger#Info(message)
@@ -412,7 +417,7 @@ function! copilot#client#LspInit(id, initialize_result) abort
   if !has_key(s:instances, a:id)
     return
   endif
-  call s:AfterInitialize(a:initialize_result, s:instances[a:id])
+  call s:PostInit(a:initialize_result, s:instances[a:id])
 endfunction
 
 function! copilot#client#LspExit(id, code, signal) abort
@@ -445,17 +450,21 @@ endfunction
 function! s:NvimRequest(method, params, ...) dict abort
   let params = deepcopy(a:params)
   let [bufnr, progress] = s:PreprocessParams(self, params)
-  if !has_key(self, 'client_id') || has_key(self, 'kill')
-    let id = v:null
-  else
-    let id = eval("v:lua.require'_copilot'.lsp_request(self.id, a:method, params, bufnr)")
+  let request = call('s:SetUpRequest', [self, v:null, a:method, params, progress] + a:000)
+  call self.AfterInitialized(function('s:NvimDoRequest', [self, request, bufnr]))
+  return request
+endfunction
+
+function! s:NvimDoRequest(client, request, bufnr) abort
+  let request = a:request
+  if has_key(a:client, 'client_id') && !has_key(a:client, 'kill')
+    let request.id = eval("v:lua.require'_copilot'.lsp_request(a:client.id, a:request.method, a:request.params, a:bufnr)")
   endif
-  let request = call('s:SetUpRequest', [self, id, a:method, params, progress] + a:000)
-  if id isnot# v:null
-    let self.requests[id] = request
+  if request.id isnot# v:null
+    let a:client.requests[request.id] = request
   else
-    if has_key(self, 'client_id')
-      call copilot#client#LspExit(self.client_id, -1, -1)
+    if has_key(a:client, 'client_id')
+      call copilot#client#LspExit(a:client.client_id, -1, -1)
     endif
     call copilot#util#Defer(function('s:RejectRequest'), request, s:error_connection_inactive)
   endif
@@ -471,7 +480,11 @@ function! s:NvimClose() dict abort
 endfunction
 
 function! s:NvimNotify(method, params) dict abort
-  return eval("v:lua.require'_copilot'.rpc_notify(self.id, a:method, a:params)")
+  call self.AfterInitialized(function('s:NvimDoNotify', [self.client_id, a:method, a:params]))
+endfunction
+
+function! s:NvimDoNotify(client_id, method, params) abort
+  return eval("v:lua.require'_copilot'.rpc_notify(a:client_id, a:method, a:params)")
 endfunction
 
 function! copilot#client#LspHandle(id, request) abort
@@ -479,19 +492,6 @@ function! copilot#client#LspHandle(id, request) abort
     return
   endif
   return s:OnMessage(s:instances[a:id], a:request)
-endfunction
-
-function! s:GetNodeVersion(command) abort
-  let out = []
-  let err = []
-  let status = copilot#job#Stream(a:command + ['--version'], function('add', [out]), function('add', [err]))
-  let string = matchstr(join(out, ''), '^v\zs\d\+\.[^[:space:]]*')
-  if status != 0
-    let string = ''
-  endif
-  let major = str2nr(string)
-  let minor = str2nr(matchstr(string, '\.\zs\d\+'))
-  return {'status': status, 'string': string, 'major': major, 'minor': minor}
 endfunction
 
 let s:script_name = 'dist/language-server.js'
@@ -562,7 +562,7 @@ function! copilot#client#Settings() abort
   return settings
 endfunction
 
-function! s:AfterInitialize(result, instance) abort
+function! s:PostInit(result, instance) abort
   let a:instance.serverInfo = get(a:result, 'serverInfo', {})
   if !has_key(a:instance, 'node_version') && has_key(a:result.serverInfo, 'nodeVersion')
     let a:instance.node_version = a:result.serverInfo.nodeVersion
@@ -571,14 +571,15 @@ function! s:AfterInitialize(result, instance) abort
       call s:Warn(a:instance.node_version_warning)
     endif
   endif
+  let a:instance.AfterInitialized = function('copilot#util#Defer')
+  for Fn in remove(a:instance, 'after_initialized')
+    call copilot#util#Defer(Fn)
+  endfor
 endfunction
 
 function! s:InitializeResult(result, instance) abort
-  call s:AfterInitialize(a:result, a:instance)
   call s:Send(a:instance, {'method': 'initialized', 'params': {}})
-  for request in remove(a:instance, 'initialization_pending')
-    call copilot#util#Defer(function('s:SendRequest'), a:instance, request)
-  endfor
+  call s:PostInit(a:result, a:instance)
 endfunction
 
 function! s:InitializeError(error, instance) abort
@@ -639,7 +640,9 @@ function! copilot#client#New(...) abort
   let instance = {'requests': {},
         \ 'progress': {},
         \ 'workspaceFolders': {},
+        \ 'after_initialized': [],
         \ 'status': {'status': 'Starting', 'message': ''},
+        \ 'AfterInitialized': function('s:AfterInitialized'),
         \ 'Close': function('s:Nop'),
         \ 'Notify': function('s:False'),
         \ 'Request': function('s:VimRequest'),
@@ -715,7 +718,7 @@ function! copilot#client#New(...) abort
     let opts.capabilities = s:vim_capabilities
     let opts.processId = getpid()
     let request = instance.Request('initialize', opts, function('s:InitializeResult'), function('s:InitializeError'), instance)
-    let instance.initialization_pending = []
+    call call(remove(instance.after_initialized, 0), [])
     call instance.Notify('workspace/didChangeConfiguration', {'settings': settings})
   endif
   let s:instances[instance.id] = instance
