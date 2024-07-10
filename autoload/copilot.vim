@@ -353,7 +353,26 @@ function! s:UpdatePreview() abort
       let data.hl_mode = 'combine'
       call nvim_buf_set_extmark(0, copilot#NvimNs(), line('.')-1, col('.')-1, data)
     elseif s:has_vim_ghost_text
-      call prop_add(line('.'), col('.'), {'type': s:hlgroup, 'text': text[0]})
+      let new_suffix = text[0]
+      let current_suffix = getline('.')[col('.') - 1 :]
+      let inset = ''
+      while delete > 0 && !empty(new_suffix)
+        let last_char = matchstr(new_suffix, '.$')
+        let new_suffix = matchstr(new_suffix, '^.\{-\}\ze.$')
+        if last_char ==# matchstr(current_suffix, '.$')
+          if !empty(inset)
+            call prop_add(line('.'), col('.') + len(current_suffix), {'type': s:hlgroup, 'text': inset})
+            let inset = ''
+          endif
+          let current_suffix = matchstr(current_suffix, '^.\{-\}\ze.$')
+          let delete -= 1
+        else
+          let inset = last_char . inset
+        endif
+      endwhile
+      if !empty(new_suffix . inset)
+        call prop_add(line('.'), col('.'), {'type': s:hlgroup, 'text': new_suffix . inset})
+      endif
       for line in text[1:]
         call prop_add(line('.'), 0, {'type': s:hlgroup, 'text_align': 'below', 'text': line})
       endfor
