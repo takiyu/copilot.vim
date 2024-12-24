@@ -154,7 +154,31 @@ function! copilot#panel#Open(opts) abort
         \ 'workDoneToken': function('s:WorkDone', [state]),
         \ }
   let response = copilot#Request('textDocument/copilotPanelCompletion', params, function('s:Result', [state]), function('s:Error', [state]))
-  exe substitute(a:opts.mods, '\C\<tab\>', '-tab', 'g') 'keepalt split' state.panel
+
+  " ----------------------------------------------------------------------------
+  " [HACK]: Floating panel
+  if has('nvim')
+    " Create a floating window if NeoVim
+    let panel_buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_name(panel_buf, state.panel)
+    let float_w = winwidth(0) / 2
+    let float_h = winheight(0) * 2 / 3
+    let opts = {
+          \ 'relative': 'editor',
+          \ 'width': float_w,
+          \ 'height': float_h,
+          \ 'col': (winwidth(0) - float_w),
+          \ 'row': (winheight(0) - float_h) - 1,
+          \ 'style': 'minimal',
+          \ 'border': 'rounded'
+          \ }
+    call nvim_open_win(panel_buf, v:true, opts)
+  else
+    " Original split window for vim
+    exe substitute(a:opts.mods, '\C\<tab\>', '-tab', 'g') 'keepalt split' state.panel
+  endif
+  " ----------------------------------------------------------------------------
+
   let b:copilot_panel = state
   call s:Initialize(state)
   call s:Render(state)
